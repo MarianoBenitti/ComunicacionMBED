@@ -65,6 +65,7 @@ uint8_t tamBuffer;//tamaño del buffer de escritura, debe ser de 2 a la n
 
 /* define --------------------------------------------------------------------*/
 #define ISNEWBYTE banderas.bit.b0
+#define ISNEWCMD banderas.bit.b1
 /* END define ----------------------------------------------------------------*/
 
 /* hardware configuration ----------------------------------------------------*/
@@ -88,18 +89,40 @@ void OnRxByte();
  *  Esta funcion revisa si se ingresa un comando, detecta el header y una vez detectado
  *  prepara la estructura que se utilizara para analizarlo posteriormente en otra funcion
  * */
-void DecodeCMD(s_LDatos *datosCMD);
+void DecodeCMD();
 
 /** \fn ExecuteCMD
  * \brief 
  *  Esta funcion ejecuta el comando con los datos ingresados en la estructura
  *  una vez determinado el comando por su id procede a ejecutarlo
+ * \param[in]: datosCMD es la estructura donde estan todos los datos leidos
  * */
 void ExecuteCMD(s_LDatos *datosCMD);
 
+/** \fn ColocarHeader
+ * \brief 
+ *  Esta funcion carga en el buffer de escritura el proximo comando a enviar a la pc
+ * 
+ * \param[in]: datosE es la estructura del buffer de escritura
+ * \param[in]: ID es el id del comando que se preparara para enviar
+ * \param[in]: nbytes es el numero de bytes de datos del comando es decir el length
+ * */
+void ColocarHeader(s_EDatos *datosE,uint8_t ID,uint8_t nBytes);
+
+/** \fn ColocarPayload
+ * \brief 
+ *  Esta funcion carga en el buffer de escritura el proximo comando a enviar a la pc
+ * 
+ * \param[in]: datosE es la estructura del buffer de escritura
+ * \param[in]: ID es el id del comando que se preparara para enviar
+ * \param[in]: string es la cadena de datos sin el id
+ * \param[in]: nDatos es la cantidad de datos de la cadena
+ * */
+void ColocarPayload(s_EDatos *datosE,uint8_t *string,uint8_t nDatos);
+
 void TickerGen();
 
-void DecodeCMD();
+
 /* END Function prototypes ---------------------------------------------------*/
 
 
@@ -124,7 +147,6 @@ void OnRxByte(){
        if(datosLec.iRE>=datosLec.tamBuffer){
         datosLec.iRE=0;
        }
-        ISNEWBYTE=1;
     }
 }
 
@@ -140,7 +162,6 @@ void DecodeCMD(){
         case EST_U:
                  if(datosLec.bufL[datosLec.iRL]=='U'){
                     datosLec.estDecode=EST_N;
-                    
                     }
                     
             break;
@@ -180,18 +201,44 @@ void DecodeCMD(){
                          datosLec.estDecode=EST_U;
                     }
             break;
-        case NUMBYTES:
-                        
-                        PC.putc('G');
-                            
-                        datosLec.estDecode=EST_U;
-                        
+        case NUMBYTES: datosLec.nBytes=datosLec.bufL[datosLec.iRL];
+                       datosLec.estDecode=TOKEN;
+                       
+            break;
+        case TOKEN:if(datosLec.bufL[datosLec.iRL]==':'){
+                    datosLec.estDecode=PAYLOAD;
+                    }else{
                         if(datosLec.iRL>0){
                             datosLec.iRL--;
                         }else{
                             datosLec.iRL=datosLec.tamBuffer-1;
                         }
-                        
+                         datosLec.estDecode=EST_U;
+                    }
+            break;
+        case PAYLOAD: 
+                      datosLec.idCMD=datosLec.bufL[datosLec.iRL];//guardo la id del comando
+                      datosLec.iDatos=datosLec.iRL;//guardo la posicion de los datos
+                      datosLec.checksum='U'^'N'^'E'^'R'^datosLec.nBytes^':'^datosLec.idCMD;//inicializamos el checksum
+                      datosLec.iChecksum=datosLec.iDatos+datosLec.nBytes-1;//guardo la posicion del checksum esperada
+                      datosLec.estDecode=CHECKSUM;
+            break;
+        case CHECKSUM:
+                        if(datosLec.iRL!=datosLec.iChecksum){
+                            datosLec.checksum=datosLec.checksum^datosLec.bufL[datosLec.iRL];
+                        }else{
+                            if(datosLec.bufL[datosLec.iRL]==datosLec.checksum){
+                                ISNEWCMD=1;
+                            }else{
+                                if(datosLec.iRL>0){//VOLVEMOS A VERIFICAR SI ES UNA U
+                                    datosLec.iRL--;
+                                }else{
+                                    datosLec.iRL=datosLec.tamBuffer-1;
+                                }
+                            }
+                            datosLec.estDecode=EST_U;
+                        }
+
             break;
         default:datosLec.estDecode=EST_U;
             break;
@@ -202,6 +249,78 @@ void DecodeCMD(){
         }
     }
 }
+
+void ExecuteCMD(s_LDatos *datosCMD){
+    uint8_t str[35];
+    switch (datosCMD->idCMD){
+    case 0xF0:
+               ColocarHeader(&datosEsc,0xF0,3);
+               str[0]=0x0D;
+               ColocarPayload(&datosEsc,str,1);
+        break;
+    
+    default:
+        break;
+    }
+}
+
+void ColocarHeader(s_EDatos *datosE,uint8_t ID,uint8_t nBytes){
+    datosE->bufE[datosE->iTE]='U';
+    datosE->iTE++;
+    if(datosE->iTE>=datosE->tamBuffer){
+        datosE->iTE=0;
+    }
+    datosE->bufE[datosE->iTE]='N';
+    datosE->iTE++;
+    if(datosE->iTE>=datosE->tamBuffer){
+        datosE->iTE=0;
+    }
+    datosE->bufE[datosE->iTE]='E';
+    datosE->iTE++;
+    if(datosE->iTE>=datosE->tamBuffer){
+        datosE->iTE=0;
+    }
+    datosE->bufE[datosE->iTE]='R';
+    datosE->iTE++;
+    if(datosE->iTE>=datosE->tamBuffer){
+        datosE->iTE=0;
+    }
+    datosE->bufE[datosE->iTE]=nBytes;
+    datosE->iTE++;
+    if(datosE->iTE>=datosE->tamBuffer){
+        datosE->iTE=0;
+    }
+    datosE->bufE[datosE->iTE]=':';
+    datosE->iTE++;
+   if(datosE->iTE>=datosE->tamBuffer){
+        datosE->iTE=0;
+    }
+     datosE->bufE[datosE->iTE]=ID;
+    datosE->iTE++;
+    if(datosE->iTE>=datosE->tamBuffer){
+        datosE->iTE=0;
+    }
+    datosE->checksum='U'^'N'^'E'^'R'^nBytes^':'^ID;//inicializamos el checksum
+}
+
+
+void ColocarPayload(s_EDatos *datosE,uint8_t *string,uint8_t nDatos){
+    uint8_t i;
+    for(i=0;i<nDatos;i++){
+        datosE->checksum=datosE->checksum^string[i];
+        datosE->bufE[datosE->iTE]=string[i];
+        datosE->iTE++;
+        if(datosE->iTE>=datosE->tamBuffer){
+            datosE->iTE=0;
+        }
+    }
+    datosE->bufE[datosE->iTE]=datosE->checksum;
+    datosE->iTE++;
+    if(datosE->iTE>=datosE->tamBuffer){
+            datosE->iTE=0;
+        }
+}
+
 /* END Function prototypes user code ------------------------------------------*/
 
 int main()
@@ -213,7 +332,7 @@ int main()
 
 /* User code -----------------------------------------------------------------*/
     //ENLAZAMOS EL TICKER
-    tickerGen.attach(&TickerGen,200*0.001);//seleccionamos al ticker un intervalo de 10 ms
+    tickerGen.attach_us(&TickerGen,1000000);//seleccionamos al ticker un intervalo de 1000 ms en microseg
     //ENLAZAMOS EL PUERTO SERIE
     PC.baud(115200);//ASIGNAMOS LA VELOCIDAD DE COMUNICACION
     PC.attach(&OnRxByte,SerialBase::IrqType::RxIrq);//ENLAZAMOS LA FUNCION CON EL METODO DE LECTURA
@@ -235,16 +354,24 @@ int main()
     datosEsc.tamBuffer=64;
     while(1){
     	
-    	if (datosLec.iRE!=datosLec.iRL)
-        {
-            //PC.putc(datosLec.bufL[datosLec.iRL]);
-            //datosLec.iRL++;
-            //if(datosLec.iRL>=datosLec.tamBuffer){
-              //  datosLec.iRL=0;
-            //}
+    	if (datosLec.iRE!=datosLec.iRL){
             DecodeCMD();
         }
+        if(ISNEWCMD){
+            ExecuteCMD(&datosLec);
+            ISNEWCMD=0;
+        }
         
+        if(datosEsc.iTE!=datosEsc.iTL){//si hay para escribir se manda a la pc
+            if(PC.writeable()){
+                PC.putc(datosEsc.bufE[datosEsc.iTL]);
+                datosEsc.iTL++;
+                if(datosEsc.iTL>=datosEsc.tamBuffer){
+                    datosEsc.iTL=0;
+                }
+
+            }
+        }
            
         
 
