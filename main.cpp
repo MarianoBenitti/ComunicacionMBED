@@ -26,6 +26,25 @@
 
 /* typedef -------------------------------------------------------------------*/
 typedef enum{EST_U=0,EST_N,EST_E,EST_R,NUMBYTES,TOKEN,PAYLOAD,CHECKSUM}e_estCMD;
+typedef enum{DERECHA=0,IZQUIERDA,ARRIBA,ABAJO}e_Muros;
+typedef enum{XPARAM=0x00,YPARAM=0x01,VELPARAM=0x02,ANGPARAM=0x03}e_Parametros;
+typedef enum{ALIVEID=0xF0,ACKID=0xF0,FIRMWAREID=0XF1,LEDSID=0x10,BUTTONSID=0x12,CONTROLID=0x17,WALLID=0x18}e_IDSCMD;
+//_____________________________________________________________________________
+typedef enum{UP,FALLING,RISSING,DOWN}e_estadoB;
+typedef union{
+uint8_t uint8[4];
+int8_t int8[4];
+uint16_t uint16[2];
+int16_t int16[2];
+uint32_t uint32;
+int32_t int32;
+}u_ConvDatos;
+
+typedef struct __attribute__((packed,aligned(1))){
+e_estadoB e_estadoBoton;
+uint8_t presion;//indica si el boton se presiono
+uint32_t Tpresion;//indica el tiempo que se presiono
+}boton;
 //____________________________________________________________________________
 typedef union{
     struct {
@@ -66,6 +85,8 @@ uint8_t tamBuffer;//tamaño del buffer de escritura, debe ser de 2 a la n
 /* define --------------------------------------------------------------------*/
 #define ISNEWBYTE banderas.bit.b0
 #define ISNEWCMD banderas.bit.b1
+
+
 /* END define ----------------------------------------------------------------*/
 
 /* hardware configuration ----------------------------------------------------*/
@@ -78,6 +99,13 @@ RawSerial PC(PA_9,PA_10);
 
 
 /* Function prototypes -------------------------------------------------------*/
+/** \fn ComprobarBotones
+ * \brief 
+ *  Esta funcion comprueba el estado de los 4 botones que estan dentro del bus de entrada
+ *  una vez comprobado el estado dentro de la estructura global de los botones establece el estado del boton,
+ *  si fue presionado y cuanto tiempo estubo presionado.
+ * */
+void ComprobarBotones();
 /** \fn OnRxByte
  * \brief 
  *  Verifica si hay algo para leer en el buffer de entrada, si hay algo para leer lo recibe y 
@@ -120,6 +148,14 @@ void ColocarHeader(s_EDatos *datosE,uint8_t ID,uint8_t nBytes);
  * */
 void ColocarPayload(s_EDatos *datosE,uint8_t *string,uint8_t nDatos);
 
+void CambiarLeds(uint8_t LedstoAct,uint8_t LedsValue);
+
+void WallCommand(uint8_t wall);
+
+void ButtonsState();
+
+void ControlLanzamiento(uint8_t IdParam,int16_t value);
+
 void TickerGen();
 
 
@@ -127,6 +163,15 @@ void TickerGen();
 
 
 /* Global variables ----------------------------------------------------------*/
+//CONTADORES DE TIEMPO
+uint8_t tdeLectura=0;
+uint8_t tdeHeartBeat=0;
+uint8_t tdeApagarLed[4]={0,0,0,0};
+uint8_t tdeReiniBoton=0;
+uint8_t tdeControlBotones=0;
+//variable para comvertir datos
+u_ConvDatos convTipos;
+//ticker
 Ticker tickerGen;
 band banderas;//generamos una variable de banderas
 //generamos el buffer de Lectura
@@ -136,10 +181,51 @@ s_LDatos datosLec;
 //generamos el buffer de Escritura
 uint8_t bufferE[64];
 s_EDatos datosEsc;
+
+//generamos los 4 botones a evaluar
+boton botones[4];//tiene los datos de cada boton en particular
+
 /* END Global variables ------------------------------------------------------*/
 
 
 /* Function prototypes user code ----------------------------------------------*/
+void ComprobarBotones(){
+    uint8_t i;
+    if(tdeReiniBoton==0){
+            tdeReiniBoton=4;
+            for(i=0;i<4;i++){
+                switch(botones[i].e_estadoBoton){
+                    case UP:
+                            if(BOTONES & (1<<i)){
+                                botones[i].e_estadoBoton=FALLING;
+                            }
+                        break;
+                    case FALLING:
+                            if(BOTONES & (1<<i)){
+                                botones[i].e_estadoBoton=DOWN;
+                                botones[i].presion=1;
+                                botones[i].Tpresion=0;//reiniciamos el contador de tiempo
+                            }
+                        break;
+                    case DOWN:  botones[i].Tpresion+=4;//cada vez que ingresa se le suma 4 indicando que pasaron 40 ms mas
+                                if((BOTONES & (1<<i))==0){
+                                     botones[i].e_estadoBoton=RISSING;
+                                 }
+                                
+                        break;    
+                    case RISSING:if((BOTONES & (1<<i))==0){
+                                    botones[i].e_estadoBoton=UP;
+                                    botones[i].Tpresion=0;//reiniciamos el contador de tiempo
+                                    }
+                        break;
+                    default:botones[i].e_estadoBoton=UP;
+                        break;
+                }
+
+            }
+        }
+}
+
 void OnRxByte(){
     while (PC.readable()){
       datosLec.bufL[datosLec.iRE]=PC.getc();
@@ -151,12 +237,41 @@ void OnRxByte(){
 }
 
 void TickerGen(){
-    LED = !LED;
+    uint8_t i;
+
+    if(tdeHeartBeat){
+        tdeHeartBeat--;
+        
+    }else{
+        LED = !LED;
+        tdeHeartBeat=20;
+    }
+    if(tdeLectura){
+        tdeLectura--;
+    }
+    if(tdeReiniBoton){
+        tdeReiniBoton--;
+    }
+    if(tdeControlBotones){
+        tdeControlBotones--;
+    }
+    for(i=0;i<4;i++){
+        if(tdeApagarLed[i]){
+            tdeApagarLed[i]--;
+            if(tdeApagarLed[i]==0){
+                CambiarLeds(1<<i,0);//apagamos el led que estaba prendido
+            }
+        }
+    }
+    
+
 }
 
 void DecodeCMD(){
     unsigned char indiceE;
     indiceE=datosLec.iRE;//guardamos la posicion del buffer de escritura hasta donde esta actualmente
+   if(tdeLectura){
+    tdeLectura=7;
     while(datosLec.iRL!=indiceE){
         switch (datosLec.estDecode){
         case EST_U:
@@ -248,18 +363,35 @@ void DecodeCMD(){
             datosLec.iRL=0;
         }
     }
+   }else{
+    tdeLectura=4;//si paso demasiado tiempo entre la anterior recepcion
+    datosLec.estDecode=EST_U;
+   }
 }
 
 void ExecuteCMD(s_LDatos *datosCMD){
     uint8_t str[35];
     switch (datosCMD->idCMD){
-    case 0xF0:
-               ColocarHeader(&datosEsc,0xF0,3);
+    case ALIVEID://alive
+               ColocarHeader(&datosEsc,ACKID,3);
                str[0]=0x0D;
                ColocarPayload(&datosEsc,str,1);
         break;
-    
-    default:
+    case FIRMWAREID://firmware
+               ColocarHeader(&datosEsc,FIRMWAREID,3);
+               str[0]='A';
+               ColocarPayload(&datosEsc,str,1);
+        break;
+    case LEDSID:CambiarLeds(datosLec.bufL[datosLec.iDatos+1],datosLec.bufL[datosLec.iDatos+2]);
+        break;
+    case WALLID:WallCommand(datosLec.bufL[datosLec.iDatos+1]);
+        break;
+    case BUTTONSID:ButtonsState();
+        break;
+    default:   //COMANDO NO CONOCIDO
+               ColocarHeader(&datosEsc,datosCMD->idCMD,3);
+               str[0]=0xFF;
+               ColocarPayload(&datosEsc,str,1);
         break;
     }
 }
@@ -321,6 +453,109 @@ void ColocarPayload(s_EDatos *datosE,uint8_t *string,uint8_t nDatos){
         }
 }
 
+void CambiarLeds(uint8_t LedstoAct,uint8_t LedsValue){
+     uint8_t i;
+     for(i=0;i<4;i++){
+        if(LedstoAct & 1<<i){//verificamos si hay que actualizar ese led
+           
+            if(LedsValue & 1<<i){//verificamos si hay que encenderlo o apagarlo
+                LEDS=LEDS & ~(1<<i);//encendemos el led
+            }else{
+                LEDS=LEDS | 1 <<i;//apagamos el led
+            }
+        }
+    }
+}
+
+void WallCommand(uint8_t wall){
+    
+    uint8_t led=0;
+    switch(wall){
+        case DERECHA:led=3;//seleccionamos el led a encender
+            break;
+        case IZQUIERDA:led=0;//seleccionamos el led a encender
+            break;
+        case ARRIBA:led=1;//seleccionamos el led a encender
+            break;
+        case ABAJO:led=2;//seleccionamos el led a encender
+            break;
+    }
+    LEDS=LEDS & ~(1<<led);//encendemos el led del muro chocado
+    tdeApagarLed[led]=5;
+}
+
+void ButtonsState(){
+    uint8_t estadobotones=0;
+    ColocarHeader(&datosEsc,BUTTONSID,3);
+    estadobotones=BOTONES;
+    ColocarPayload(&datosEsc,&estadobotones,1);//lo puedo pasar como una string aunque no sea un vector porque lo paso como puntero y solo cargo un elemento
+}
+
+void ControlLanzamiento(uint8_t IdParam,int16_t value){
+    uint8_t str[3];
+    ColocarHeader(&datosEsc,CONTROLID,5);
+    str[0]=IdParam;
+    convTipos.int16[0]=value;
+    str[1]=convTipos.uint8[0];
+    str[2]=convTipos.uint8[1];
+    ColocarPayload(&datosEsc,str,3);
+}
+
+void ControlBotones(){
+   
+        //AUMENTA LA VELOCIDAD DE SALIDA
+        if(botones[0].presion && botones[2].presion){
+            ControlLanzamiento(VELPARAM,1);
+            botones[0].presion=0;
+            botones[2].presion=0;
+        }
+        
+        //DISMINUYE LA VELOCIDAD DE SALIDA
+        if(botones[1].presion && botones[2].presion){
+            ControlLanzamiento(VELPARAM,-1);
+            botones[1].presion=0;
+            botones[2].presion=0;
+        }
+
+        //AUMENTA EL ANGULO DE SALIDA
+        if(botones[0].presion && botones[3].presion){
+            ControlLanzamiento(ANGPARAM,1);
+            botones[0].presion=0;
+            botones[3].presion=0;
+        }
+        //DISMINUYE EL ANGULO DE SALIDA
+        if(botones[1].presion && botones[3].presion){
+            ControlLanzamiento(ANGPARAM,-1);
+            botones[1].presion=0;
+            botones[3].presion=0;
+        }
+
+        
+
+        if(tdeControlBotones==0){
+        tdeControlBotones=15;
+        //DEZPLAZAMOS LA PELOTA HACIA ARRIBA
+        if(botones[0].presion){
+            ControlLanzamiento(YPARAM,1);
+            botones[0].presion=0;
+        }
+        //DEZPLAZAMOS LA PELOTA HACIA ABAJO
+        if(botones[1].presion){
+            ControlLanzamiento(YPARAM,-1);
+            botones[1].presion=0;
+        }
+        //DEZPLAZAMOS LA PELOTA HACIA LA IZQUIERDA
+        if(botones[2].presion){
+            ControlLanzamiento(XPARAM,-1);
+            botones[2].presion=0;
+        }
+        //DEZPLAZAMOS LA PELOTA HACIA LA IZQUIERDA
+        if(botones[3].presion){
+            ControlLanzamiento(XPARAM,1);
+            botones[3].presion=0;
+        }
+    }
+}
 /* END Function prototypes user code ------------------------------------------*/
 
 int main()
@@ -332,10 +567,12 @@ int main()
 
 /* User code -----------------------------------------------------------------*/
     //ENLAZAMOS EL TICKER
-    tickerGen.attach_us(&TickerGen,1000000);//seleccionamos al ticker un intervalo de 1000 ms en microseg
+    tickerGen.attach_us(&TickerGen,10*1000);//seleccionamos al ticker un intervalo de 1000 ms en microseg
     //ENLAZAMOS EL PUERTO SERIE
     PC.baud(115200);//ASIGNAMOS LA VELOCIDAD DE COMUNICACION
     PC.attach(&OnRxByte,SerialBase::IrqType::RxIrq);//ENLAZAMOS LA FUNCION CON EL METODO DE LECTURA
+    
+    LEDS=0xF;
     //INICIALIZAMOS BUFFER DE ENTRADA
     datosLec.iRL=0;
     datosLec.iRE=0;
@@ -352,8 +589,15 @@ int main()
     datosEsc.checksum=0;
     datosEsc.bufE=bufferE;
     datosEsc.tamBuffer=64;
+    
     while(1){
     	
+        
+        ComprobarBotones();
+        ControlBotones();
+        
+
+
     	if (datosLec.iRE!=datosLec.iRL){
             DecodeCMD();
         }
